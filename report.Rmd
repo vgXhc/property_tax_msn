@@ -1,0 +1,85 @@
+---
+title: "Analyzing land productivity in Madison (WI)"
+author: "Harald Kliems"
+date: "7/26/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+The Madison Open Data portal has property tax information by parcel: https://data-cityofmadison.opendata.arcgis.com/datasets/tax-parcels-assessor-property-information/data
+
+Data was manually downloaded as a shapefile and then saved as an `rds` object for faster loading.
+
+```{r}
+library(tidyverse)
+library(sf)
+library(ggplot2)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+parcels <- read_sf("data/Tax_Parcels__Assessor_Property_Information_.shp")
+saveRDS(parcels, "data/parcels.rds")
+```
+The dataset is large, with over 80,000 observations and 144 variables. It does not contain information on ownership.
+
+```{r}
+parcels <- readRDS("data/parcels.rds")
+str(parcels)
+```
+I don't see a data dictionary, but most of the variable names are self-explanatory. Some interesting stuff:
+- There are variables for noise from streets, railroads, and the airport. But it's unclear what the values mean. I initially thought they were decibels from noise measurements, but the values are other 0, or 60 (airport), 61 (street, railroad)
+
+```{r}
+parcels %>% 
+  filter(NoiseRailr > 0) %>% 
+  select(Address, NoiseRailr) %>% 
+  arrange(desc(NoiseRailr))
+```
+- There is info on building styles, with 29 different classifications:
+```{r}
+unique(parcels$HomeStyle)
+```
+# Property tax per sqft
+Add a new variable for `NetTaxes` per sq ft.
+
+```{r}
+parcels2 <- parcels %>% 
+  mutate(tax_per_sqft = NetTaxes / LotSize)
+```
+
+
+
+```{r}
+parcels2 %>% 
+  mutate(Zoning1 = fct_reorder(Zoning1, tax_per_sqft, median)) %>% 
+  group_by(Zoning1) %>% 
+  ggplot(aes(Zoning1, tax_per_sqft)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  coord_flip()
+```
+Unfortunately, the `Zoning1` field doesn't always contain the current zoning code. For instance, there are many codes starting with `HIS-`. I firstx thought these may represent hstorical zoning codes, but it looks like they are the city's designated historic districts. https://www.cityofmadison.com/dpced/planning/local-historic-districts/1601/ In most cases the actual zoning district then is in the `Zoning2` field, and in a few cases, you have to go to `Zoning3`.
+
+```{r}
+parcels3 <- parcels2 %>% 
+  mutate(zoning_clean = case_when(str_detect(Zoning1, "HIS-") & !str_detect(Zoning2, "HIS-") ~ Zoning2,
+                                  str_detect(Zoning1, "HIS-") & str_detect(Zoning2, "HIS-") ~ Zoning3,
+                                  TRUE ~ Zoning1))
+```
+
+
+
+```{r}
+library(mapdeck)
+mapdeck(style = 'mapbox://styles/mapbox/dark-v9', pitch = 45) %>% 
+  add_polygon(parcels3, elevation = "tax_per_sqft",
+             elevation_scale = 1000000)
+```
+
+# Issues
+- Condos are difficult to handle for the tax per sqft of lot size because their lot size is provided as 0.
